@@ -1,0 +1,318 @@
+#include <SPI.h>  
+#include <Pixy.h>
+#include "Wire.h"
+#include "HX711.h"
+#define FILTER_N 12
+int filter_buf[FILTER_N + 1];
+const int analogInPin = A1;  
+int sensorValue = 0; 
+float Weight = 0;
+int flag=1;
+int area;
+int IN1=23;
+int IN2=22;
+int IN3=24;
+int IN4=25;
+int ENA=5                            ;
+int ENB=4;
+int aix_x;
+int dis_thr=300;
+int mid=155;
+int dead_band_m=10;
+int dead_band=30;
+int ini_val_Foword;
+int val_Foword;
+int ini_val_Turn;
+int val_Turn;
+int val_Yaw;
+int val_Pitch;
+float k, kp, ki, kd;
+float k_t, kp_t, ki_t, kd_t;
+
+int timeChange; 
+int timeChange_t; 
+unsigned long lastTime;
+unsigned long lastTime_t;
+float SampleTime = 0;
+float SampleTime_t = 0;
+unsigned long nowtime=millis();
+unsigned long nowtime_t=millis();
+
+float errSum, dErr, error, lastErr;
+float errSum_t, dErr_t, error_t, lastErr_t;
+
+float Input, Output;
+float Input_t, Output_t;
+// This is the main Pixy object 
+Pixy pixy;
+struct Axis  // Datas from remote control
+{
+  uint16_t axis_1;
+  uint16_t axis_2;
+  uint16_t axis_3;
+  uint16_t axis_4;
+  uint16_t axis_5;
+  uint16_t axis_6;
+  uint16_t axis_7;
+  uint16_t axis_8;
+};
+Axis axis_x;
+
+void setup()
+{
+  Wire.begin();
+  Serial.begin(57600);
+  Serial.print("Starting...\n");
+  Serial1.begin(57600);
+  Serial1.print("Starting...\n");
+  pinMode(IN1,OUTPUT);
+  pinMode(IN2,OUTPUT);
+  pinMode(IN3,OUTPUT);
+  pinMode(IN4,OUTPUT);
+  pinMode(ENA,OUTPUT);
+  pinMode(ENB,OUTPUT);
+  pinMode(49,OUTPUT);
+  digitalWrite(49,HIGH);
+  digitalWrite(IN1,HIGH);
+  digitalWrite(IN2,HIGH);
+  digitalWrite(IN3,HIGH);
+  digitalWrite(IN4,HIGH);
+  pixy.init();
+  //Init_Hx711();
+  //delay(1000);
+  //Get_Maopi();
+}
+
+void loop()
+{ 
+  sensorValue = analogRead(analogInPin);
+  if(sensorValue<=514)
+  {
+  flag++;
+  if(flag<200)
+  digitalWrite(49,HIGH);
+  else if(flag<400)
+  {
+    digitalWrite(49,LOW);
+  }
+  else flag=1;
+  }
+  static int i = 0;
+  int j;
+  uint16_t blocks;
+  char buf[32]; 
+  area=pixy.blocks[j].width*pixy.blocks[j].height*0.1;
+  // grab blocks!
+  blocks = pixy.getBlocks();
+  if (blocks)
+  {
+          ///*
+          //Serial.println();
+          //Serial.print(" signature:");
+          //Serial.print(pixy.blocks[j].signature);
+          //Serial.print(" blocks");
+          //Serial.print(blocks);
+          Filter() ;
+          //Serial.print(" area=");
+          //Serial.print(area);
+          //Serial.print(" x:");
+          //Serial.print(pixy.blocks[j].x);
+          //Serial.print("sensor = " );
+  //Serial.println(sensorValue);
+          aix_x=pixy.blocks[j].x;
+          //Serial.print(" y:");
+          //Serial.print(pixy.blocks[j].y);
+
+          Serial1.write(" signature:");
+          Serial1.write(pixy.blocks[j].signature);
+          Serial1.print(" area=");
+          Serial1.print(area);
+          Serial1.print(" x:");
+          Serial1.print(pixy.blocks[j].x);
+          Serial1.print(" y:");
+          Serial1.println(pixy.blocks[j].y);
+          if(dead_band_m>=(aix_x-mid))
+          {
+          control();
+          }
+          control_turn();
+          //weight();
+          }
+         
+
+}
+int Filter() 
+{
+  int i;
+  int filter_sum = 0;
+  filter_buf[FILTER_N] = area;
+  for(i = 0; i < FILTER_N; i++) {
+    filter_buf[i] = filter_buf[i + 1]; 
+    filter_sum += filter_buf[i];
+  }
+  area=(filter_sum / FILTER_N);
+}
+void weight()
+{
+  Weight = Get_Weight();  //计算放在传感器上的重物重量
+  Serial.print(float(Weight/1000),3); //串口显示重量
+  Serial.print(" kg\n");  //显示单位
+  Serial.print("");   //显示单位
+
+}
+void control()
+{
+  if((area-dis_thr)>=dead_band)
+  {
+    FBPID();
+    val_Foword=map(abs(Output),0,500,0,255);
+     //Serial.print("  Backward=");
+    //Serial.print(val_Foword);
+    //Serial.print("  output=");
+    //Serial.print(Output);
+    Backward(IN1,IN2,IN3,IN4,val_Foword); 
+  }
+  else if((dis_thr-area)>=dead_band)
+  {
+    FBPID();
+    val_Foword=map(abs(Output),0,500,0,255);
+    //Serial.print("  Forward=");
+  // Serial.print(val_Foword);
+    //Serial.print("  output=");
+    //Serial.print(Output);
+    Forward(IN1,IN2,IN3,IN4,val_Foword);
+  }
+  else
+  {
+    errSum=0;
+    Stop();
+  }
+}
+void control_turn()
+{
+    if((aix_x-mid)>=dead_band_m)
+  {
+    TURN_PID();
+    val_Turn=map(abs(Output_t),0,255,0,255);
+    //Serial.print("  val_TurnLeft=");
+    //Serial.print(val_Turn);
+    TurnLeft(IN1,IN2,IN3,IN4,val_Turn);
+    lastTime_t=millis();
+  }
+  else if((mid-aix_x)>=dead_band_m)
+  {
+    TURN_PID();
+    val_Turn=map(abs(Output_t),0,255,0,255);
+    //Serial.print("  val_TurnRight=");
+    //Serial.print(val_Turn);
+    TurnRight(IN1,IN2,IN3,IN4,val_Turn);
+    lastTime_t=millis();
+  }
+  else
+  {
+    errSum_t=0;
+    errSum=0;
+  }
+}
+void FBPID()
+{ 
+  kp = 1 * 0.8;
+  ki = 1 * 0.0005;
+  kd = 1 * 0.00001;
+  unsigned long now = millis();
+  
+  timeChange = (now - lastTime);
+  lastTime=now;
+  if(timeChange >= SampleTime)
+  {
+    Input = dis_thr-area;
+    error = Input;
+    errSum += error * timeChange;
+    //Serial.print("   timechange=");
+    //Serial.print(timeChange);
+    dErr = (error - lastErr) / timeChange;
+    lastErr = error;
+    Output = kp * error + ki * errSum + kd * dErr; 
+   
+    
+
+  }
+}
+void TURN_PID()
+{ 
+  kp_t = 1 * 0.2; 
+  ki_t = 1 * 0.00051; 
+  kd_t = 1 * 1.21;
+  unsigned long now_t = millis();
+  
+  timeChange_t = (now_t - lastTime_t);
+  lastTime_t = now_t;
+   Serial.print("   timechange_t=");
+   Serial.print(timeChange_t);
+  if(timeChange_t >= SampleTime_t)
+  {
+    Input_t = aix_x-mid;
+    error_t = Input_t;
+    errSum_t += error_t * timeChange_t;
+    dErr_t = (error_t - lastErr_t) / timeChange_t;
+    lastErr_t = error_t;
+    Serial.print("   ddErr_t=");
+   Serial.print(dErr_t);
+    Output_t = kp_t * error_t + ki_t * errSum_t + kd_t * dErr_t;
+    if(Output_t>255)
+    {
+      Output_t=255;
+    }
+
+  }
+}
+void TurnRight(int pin23,int pin22,int pin24,int pin25,int SpeedValue_Yaw)//电机右转，电机到底是右转还是左转取决于电机端的接线和控制脚的顺序
+{
+  digitalWrite(pin23,LOW);
+  digitalWrite(pin22,HIGH);
+  digitalWrite(pin24,HIGH);
+  digitalWrite(pin25,LOW);
+  analogWrite(ENA,SpeedValue_Yaw);
+  analogWrite(ENB,SpeedValue_Yaw);
+  
+}
+void TurnLeft(int pin23,int pin22,int pin24,int pin25,int SpeedValue_Yaw)//同上
+{
+  digitalWrite(pin23,HIGH);
+  digitalWrite(pin22,LOW);
+  digitalWrite(pin24,LOW);
+  digitalWrite(pin25,HIGH);
+  analogWrite(ENA,SpeedValue_Yaw);
+  analogWrite(ENB,SpeedValue_Yaw);
+  
+}
+void Stop()//紧急制动，实际就是将电机两个端短接了
+{
+  digitalWrite(IN1,HIGH);
+  digitalWrite(IN2,HIGH);
+  digitalWrite(IN3,HIGH);
+  digitalWrite(IN4,HIGH);
+  analogWrite(ENA,0);
+  analogWrite(ENB,0);
+}
+void Forward(int pin23,int pin22,int pin24,int pin25,int SpeedValue_Pitch)
+{
+  digitalWrite(pin23,LOW);
+  digitalWrite(pin22,HIGH);
+  digitalWrite(pin24,LOW);
+  digitalWrite(pin25,HIGH);
+
+  analogWrite(ENA,SpeedValue_Pitch);
+  analogWrite(ENB,SpeedValue_Pitch);
+  
+}
+void Backward(int pin23,int pin22,int pin24,int pin25,int SpeedValue_Pitch)
+{
+  digitalWrite(IN1,HIGH);
+  digitalWrite(IN2,LOW);
+  digitalWrite(IN3,HIGH);
+  digitalWrite(IN4,LOW);
+  analogWrite(ENA,SpeedValue_Pitch);
+  analogWrite(ENB,SpeedValue_Pitch);
+}
+
